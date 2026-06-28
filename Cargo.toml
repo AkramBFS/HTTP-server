@@ -1,0 +1,20 @@
+[package]
+name = "http-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web framework & Async ecosystem
+axum = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+
+# Serialization/Deserialization (JSON handling)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging and Diagnostics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+dotenvy = "0.15" # For loading .env files securely
