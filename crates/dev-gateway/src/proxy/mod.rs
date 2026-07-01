@@ -16,7 +16,7 @@ use tracing::debug;
 use crate::client::HttpClient;
 use crate::config::GatewayConfig;
 use crate::errors::GatewayError;
-use crate::routes::{self, Target};
+use crate::routes;
 
 /// Shared state passed to the proxy handler via Axum's `State` extractor.
 #[derive(Clone)]
@@ -27,7 +27,7 @@ pub struct GatewayState {
 
 /// The single catch-all proxy handler.
 ///
-/// 1. Resolves target (Django or NextJs) from the request path.
+/// 1. Resolves target upstream from the configured route table.
 /// 2. Rewrites the path if prefix stripping is enabled.
 /// 3. Sanitizes headers and injects X-Forwarded-* headers.
 /// 4. If an Upgrade header is present, hands off to the WebSocket tunnel.
@@ -41,19 +41,13 @@ pub async fn proxy_handler(
     let query = req.uri().query().map(|q| q.to_string());
 
     // Step 1: Route resolution.
-    let target = routes::resolve_target(&original_path, &state.config.api_prefix);
-    let upstream_base = match target {
-        Target::Django => &state.config.django_backend_url,
-        Target::NextJs => &state.config.nextjs_frontend_url,
-    };
+    let route = routes::resolve_route(&original_path, &state.config.routes).ok_or_else(|| {
+        GatewayError::BadGateway(format!("No route matched path {}", original_path))
+    })?;
+    let upstream_base = &route.target;
 
     // Step 2: Path rewriting.
-    let rewritten_path = routes::rewrite_path(
-        &original_path,
-        target,
-        &state.config.api_prefix,
-        state.config.strip_api_prefix,
-    );
+    let rewritten_path = routes::rewrite_path(&original_path, &route.path, route.strip_prefix);
 
     // Reconstruct the upstream URI, preserving query string.
     let upstream_uri = match query {
@@ -62,18 +56,15 @@ pub async fn proxy_handler(
     };
 
     debug!(
-        "{} {} -> {} (target: {:?})",
+        "{} {} -> {} (route: {})",
         req.method(),
         req.uri(),
         upstream_uri,
-        target
+        route.path
     );
 
     // Step 3: Detect upgrade intent *before* modifying the request.
-    let is_upgrade = req
-        .headers()
-        .get("upgrade")
-        .is_some();
+    let is_upgrade = req.headers().get("upgrade").is_some();
 
     // Step 4: Extract client upgrade future before dispatching (only for upgrades).
     let client_upgrade: Option<OnUpgrade> = if is_upgrade {
@@ -82,17 +73,18 @@ pub async fn proxy_handler(
         None
     };
 
-    // Step 5: Sanitize headers — preserve Upgrade header during WebSocket handshake.
+    // Step 5: Sanitize headers, preserving Upgrade during WebSocket handshakes.
     headers::strip_hop_by_hop(req.headers_mut(), is_upgrade);
     headers::inject_forwarded_headers(&mut req, &addr.ip().to_string());
 
     // Step 6: Rewrite the request URI to the upstream target.
-    *req.uri_mut() = upstream_uri
-        .parse::<Uri>()
-        .map_err(|e| GatewayError::InternalServerError(format!("Failed to parse upstream URI: {}", e)))?;
+    *req.uri_mut() = upstream_uri.parse::<Uri>().map_err(|e| {
+        GatewayError::InternalServerError(format!("Failed to parse upstream URI: {}", e))
+    })?;
 
     // Step 7: Dispatch.
-    let mut response = forward::forward_request(&state.client, req).await?;
+    let mut response =
+        forward::forward_request(&state.client, req, state.config.retry, !is_upgrade).await?;
 
     // Step 8: Handle WebSocket upgrade if upstream responded with 101.
     if is_upgrade && response.status() == StatusCode::SWITCHING_PROTOCOLS {

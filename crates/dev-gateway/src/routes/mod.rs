@@ -1,30 +1,32 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Target {
-    Django,
-    NextJs,
+use crate::config::RouteConfig;
+
+/// Boundary-aware matcher to resolve the upstream destination.
+/// If multiple routes match, the most specific path wins.
+pub fn resolve_route<'a>(path: &str, routes: &'a [RouteConfig]) -> Option<&'a RouteConfig> {
+    routes
+        .iter()
+        .filter(|route| route_matches(path, &route.path))
+        .max_by_key(|route| route.path.len())
 }
 
-/// Boundary-aware matcher to resolve the target destination.
-/// Resolves to Django if path matches prefix exactly or is a subpath (prefix + "/").
-/// Otherwise, falls back to NextJs.
-pub fn resolve_target(path: &str, prefix: &str) -> Target {
-    if path == prefix || path.starts_with(&format!("{}/", prefix)) {
-        Target::Django
-    } else {
-        Target::NextJs
+fn route_matches(path: &str, prefix: &str) -> bool {
+    if prefix == "/" {
+        return path.starts_with('/');
     }
+
+    path == prefix || path.starts_with(&format!("{}/", prefix))
 }
 
-/// Rewrites the path by stripping the API prefix if Django is targeted and stripping is enabled.
-pub fn rewrite_path<'a>(path: &'a str, target: Target, prefix: &str, strip: bool) -> &'a str {
-    if target == Target::Django && strip {
-        if path == prefix {
-            ""
-        } else if path.starts_with(&format!("{}/", prefix)) {
-            &path[prefix.len()..]
-        } else {
-            path
-        }
+/// Rewrites the path by stripping a matched route prefix when configured.
+pub fn rewrite_path<'a>(path: &'a str, prefix: &str, strip: bool) -> &'a str {
+    if !strip || prefix == "/" {
+        return path;
+    }
+
+    if path == prefix {
+        ""
+    } else if path.starts_with(&format!("{}/", prefix)) {
+        &path[prefix.len()..]
     } else {
         path
     }
@@ -35,35 +37,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_route_resolution() {
-        let prefix = "/api";
+    fn test_route_resolution_is_boundary_aware() {
+        let routes = vec![
+            RouteConfig {
+                path: "/api".to_string(),
+                target: "http://127.0.0.1:8000".to_string(),
+                strip_prefix: true,
+            },
+            RouteConfig {
+                path: "/".to_string(),
+                target: "http://127.0.0.1:3000".to_string(),
+                strip_prefix: false,
+            },
+        ];
 
-        // Django matches
-        assert_eq!(resolve_target("/api/v1/todos", prefix), Target::Django);
-        assert_eq!(resolve_target("/api", prefix), Target::Django);
-        assert_eq!(resolve_target("/api/", prefix), Target::Django);
+        assert_eq!(
+            resolve_route("/api/v1/todos", &routes).unwrap().path,
+            "/api"
+        );
+        assert_eq!(resolve_route("/api", &routes).unwrap().path, "/api");
+        assert_eq!(resolve_route("/api/", &routes).unwrap().path, "/api");
 
-        // NextJs matches (adversarial boundary checks)
-        assert_eq!(resolve_target("/apiary/v1/endpoints", prefix), Target::NextJs);
-        assert_eq!(resolve_target("/api-websocket", prefix), Target::NextJs);
-        assert_eq!(resolve_target("/", prefix), Target::NextJs);
-        assert_eq!(resolve_target("/_next/static/chunks/main.js", prefix), Target::NextJs);
+        assert_eq!(
+            resolve_route("/apiary/v1/endpoints", &routes).unwrap().path,
+            "/"
+        );
+        assert_eq!(resolve_route("/api-websocket", &routes).unwrap().path, "/");
+        assert_eq!(resolve_route("/", &routes).unwrap().path, "/");
+        assert_eq!(
+            resolve_route("/_next/static/chunks/main.js", &routes)
+                .unwrap()
+                .path,
+            "/"
+        );
+    }
+
+    #[test]
+    fn test_route_resolution_prefers_longest_match() {
+        let routes = vec![
+            RouteConfig {
+                path: "/api".to_string(),
+                target: "http://127.0.0.1:8000".to_string(),
+                strip_prefix: true,
+            },
+            RouteConfig {
+                path: "/api/admin".to_string(),
+                target: "http://127.0.0.1:9000".to_string(),
+                strip_prefix: true,
+            },
+        ];
+
+        assert_eq!(
+            resolve_route("/api/admin/users", &routes).unwrap().path,
+            "/api/admin"
+        );
     }
 
     #[test]
     fn test_path_rewriting() {
         let prefix = "/api";
 
-        // Strip prefix enabled
-        assert_eq!(rewrite_path("/api/v1/todos", Target::Django, prefix, true), "/v1/todos");
-        assert_eq!(rewrite_path("/api", Target::Django, prefix, true), "");
-        assert_eq!(rewrite_path("/api/", Target::Django, prefix, true), "/");
+        assert_eq!(rewrite_path("/api/v1/todos", prefix, true), "/v1/todos");
+        assert_eq!(rewrite_path("/api", prefix, true), "");
+        assert_eq!(rewrite_path("/api/", prefix, true), "/");
 
-        // Strip prefix disabled
-        assert_eq!(rewrite_path("/api/v1/todos", Target::Django, prefix, false), "/api/v1/todos");
-        assert_eq!(rewrite_path("/api", Target::Django, prefix, false), "/api");
-
-        // Next.js target should not rewrite
-        assert_eq!(rewrite_path("/api/v1/todos", Target::NextJs, prefix, true), "/api/v1/todos");
+        assert_eq!(
+            rewrite_path("/api/v1/todos", prefix, false),
+            "/api/v1/todos"
+        );
+        assert_eq!(rewrite_path("/api", prefix, false), "/api");
+        assert_eq!(rewrite_path("/api/v1/todos", "/", true), "/api/v1/todos");
     }
 }

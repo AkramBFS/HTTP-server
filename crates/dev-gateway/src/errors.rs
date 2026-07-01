@@ -21,7 +21,9 @@ impl fmt::Display for GatewayError {
             GatewayError::BadGateway(ref msg) => write!(f, "Bad Gateway: {}", msg),
             GatewayError::GatewayTimeout(ref msg) => write!(f, "Gateway Timeout: {}", msg),
             GatewayError::PayloadTooLarge(ref msg) => write!(f, "Payload Too Large: {}", msg),
-            GatewayError::InternalServerError(ref msg) => write!(f, "Internal Server Error: {}", msg),
+            GatewayError::InternalServerError(ref msg) => {
+                write!(f, "Internal Server Error: {}", msg)
+            }
         }
     }
 }
@@ -38,15 +40,19 @@ impl IntoResponse for GatewayError {
     fn into_response(self) -> Response {
         let (status, error_code, details) = match self {
             GatewayError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, "BAD_GATEWAY", msg),
-            GatewayError::GatewayTimeout(msg) => (StatusCode::GATEWAY_TIMEOUT, "GATEWAY_TIMEOUT", msg),
-            GatewayError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, "PAYLOAD_TOO_LARGE", msg),
+            GatewayError::GatewayTimeout(msg) => {
+                (StatusCode::GATEWAY_TIMEOUT, "GATEWAY_TIMEOUT", msg)
+            }
+            GatewayError::PayloadTooLarge(msg) => {
+                (StatusCode::PAYLOAD_TOO_LARGE, "PAYLOAD_TOO_LARGE", msg)
+            }
             GatewayError::InternalServerError(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_SERVER_ERROR",
                 msg,
             ),
         };
-        
+
         let response_body = Json(ErrorPayload {
             error: error_code.to_string(),
             message: details,

@@ -35,9 +35,8 @@ async fn main() {
     };
 
     // Step 2: Initialize structured logging.
-    let level_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("dev_gateway=debug,tower_http=debug,axum=info")
-    });
+    let level_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("dev_gateway=debug,tower_http=debug,axum=info"));
 
     fmt().with_env_filter(level_filter).init();
 
@@ -46,11 +45,17 @@ async fn main() {
         gateway_config.bind_host, gateway_config.bind_port
     );
     info!(
-        "Routing {} -> Django ({}), everything else -> NextJs ({})",
-        gateway_config.api_prefix,
-        gateway_config.django_backend_url,
-        gateway_config.nextjs_frontend_url
+        "Loaded {} route(s); retry attempts: {}, backoff: {}ms",
+        gateway_config.routes.len(),
+        gateway_config.retry.attempts,
+        gateway_config.retry.backoff_ms
     );
+    for route in &gateway_config.routes {
+        info!(
+            "Routing {} -> {} (strip_prefix: {})",
+            route.path, route.target, route.strip_prefix
+        );
+    }
 
     // Step 3: Build the shared upstream client.
     let http_client = Arc::new(client::build_client());
@@ -62,7 +67,7 @@ async fn main() {
     };
 
     // Step 5: Build the router with layered middleware.
-    //   Outermost to innermost: body limit → timeout → logging → handler.
+    //   Outermost to innermost: body limit -> timeout -> logging -> handler.
     let app = axum::Router::new()
         .fallback(proxy::proxy_handler)
         .layer(
@@ -76,23 +81,18 @@ async fn main() {
         .with_state(state);
 
     // Step 6: Bind TCP listener.
-    let socket_address: SocketAddr = format!(
-        "{}:{}",
-        gateway_config.bind_host, gateway_config.bind_port
-    )
-    .parse()
-    .unwrap_or_else(|e| {
-        eprintln!("Invalid bind address: {}", e);
-        std::process::exit(1);
-    });
+    let socket_address: SocketAddr =
+        format!("{}:{}", gateway_config.bind_host, gateway_config.bind_port)
+            .parse()
+            .unwrap_or_else(|e| {
+                eprintln!("Invalid bind address: {}", e);
+                std::process::exit(1);
+            });
 
     let tcp_listener = match tokio::net::TcpListener::bind(socket_address).await {
         Ok(listener) => listener,
         Err(err) => {
-            error!(
-                "Failed to bind TCP listener on {}: {}",
-                socket_address, err
-            );
+            error!("Failed to bind TCP listener on {}: {}", socket_address, err);
             std::process::exit(1);
         }
     };

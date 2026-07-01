@@ -1,7 +1,7 @@
-use std::time::Duration;
-use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use std::time::Duration;
 
 pub type HttpClient = Client<HttpConnector, axum::body::Body>;
 
