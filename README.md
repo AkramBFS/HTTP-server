@@ -1,103 +1,331 @@
-# Dev Gateway Reverse Proxy
+# Dev Gateway Reverse Proxy (Rust / Axum)
 
-A local development reverse proxy gateway written in Rust and Axum. It sits in
-front of multiple backend/frontend services and provides boundary-aware routing,
-streaming proxying, WebSocket tunneling, request limits, timeouts, retries, and
-structured request logging.
+A **generic local development reverse proxy gateway** written in **Rust**, built on **Axum + Hyper**.
 
-## Workspace
+The Dev Gateway is designed to sit in front of any number of upstream services and behave like a **production-grade reverse proxy**, even when used only for local development.
 
-This repository is a Cargo workspace with two binaries:
+It focuses on correctness, streaming safety, and explicit configuration rather than framework-specific assumptions.
 
-- `todo-api`: a small Axum CRUD API used as a stand-in backend.
-- `dev-gateway`: the reverse proxy gateway.
+---
+
+## Features
+
+* Declarative routing via `gateway.toml` (with environment variable fallback)
+* Fully streaming HTTP proxying (no request or response buffering)
+* WebSocket tunneling
+* Retry & backoff for safe, idempotent requests
+* Request size limits and request timeouts
+* Correct `X-Forwarded-*` header handling
+* Structured, low-noise logging
+* Deterministic, boundary-safe route matching
+
+---
+
+## Workspace Overview
+
+This repository is a **Cargo workspace** containing two independent binaries:
+
+* **`dev-gateway`** — the reverse proxy gateway
+* **`todo-api`** — a **simple Axum-based CRUD API used only as a testing backend**
+
+> **Important:**
+> The `todo-api` crate exists solely as a **stand-in backend for development and testing**.
+> It is **not** intended to be a production service.
+
+---
+
+## Project Structure
+
+```
+http-server/
+├── Cargo.toml                   # Workspace root
+├── gateway.toml.example         # Declarative routing configuration
+├── crates/
+│   ├── todo-api/                # Test-only CRUD backend
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── main.rs
+│   │       ├── config.rs
+│   │       ├── errors.rs
+│   │       ├── handlers/
+│   │       ├── models/
+│   │       └── routes/
+│   └── dev-gateway/             # Reverse proxy gateway
+│       ├── Cargo.toml
+│       ├── .env.example
+│       └── src/
+│           ├── main.rs          # Server bootstrap + middleware
+│           ├── config.rs        # GatewayConfig (env + gateway.toml)
+│           ├── errors.rs        # GatewayError → HTTP mapping
+│           ├── client.rs        # Shared Hyper connection pool
+│           ├── routes/
+│           │   └── mod.rs       # Config-driven route matcher
+│           ├── proxy/
+│           │   ├── mod.rs       # GatewayState + proxy handler
+│           │   ├── headers.rs   # Header sanitization + forwarding logic
+│           │   ├── forward.rs   # Streaming forwarding + retries
+│           │   └── upgrade.rs   # WebSocket tunneling
+│           └── middleware/
+│               └── logging.rs   # Single-line request logger
+```
+
+---
+
+## Services & Default Ports
+
+| Service     | Default Port |
+| ----------- | ------------ |
+| dev-gateway | 8080         |
+| todo-api    | 3001         |
+| example API | 8000         |
+
+All ports are configurable via **environment variables** and/or **`gateway.toml`**.
+
+---
+
+## Routing Model
+
+### Declarative, Config-Driven Routing
+
+The gateway does **not** assume any framework, backend role, or technology stack.
+
+All routing is defined through:
+
+1. `gateway.toml` (preferred)
+2. Environment variables (fallback)
+3. Hardcoded defaults (last resort)
+
+### Example `gateway.toml`
+
+```toml
+[[routes]]
+name = "api"
+match = "/api"
+strip_prefix = true
+upstream = "http://127.0.0.1:8000"
+
+[[routes]]
+name = "frontend"
+match = "/"
+strip_prefix = false
+upstream = "http://127.0.0.1:3000"
+```
+
+### Matching Rules
+
+A route matches if:
+
+* `path == match`
+* `path.starts_with(match + "/")`
+
+This prevents unsafe overlaps such as:
+
+* `/apiary`
+* `/api-websocket`
+
+---
+
+## What the Dev Gateway Does
+
+### 1. Boundary-Safe Routing
+
+* Deterministic route resolution
+* Explicit prefix stripping
+* Safe against accidental overlaps
+* Fully generic (no hardcoded backend roles)
+
+Suitable for:
+
+* Microservice setups
+* Monorepos
+* Frontend + API stacks
+* Multiple APIs behind a single port
+
+---
+
+### 2. Streaming Proxying (No Buffering)
+
+* Request and response bodies are streamed end-to-end
+* No buffering into `Vec<u8>`
+* Uses `http_body_util` to adapt Hyper bodies into Axum
+
+**Why this matters**
+
+* Large uploads
+* Slow clients
+* Backpressure-sensitive workloads
+* Predictable memory usage
+
+---
+
+### 3. Retry & Backoff (Safe by Design)
+
+Retries are only enabled for requests that are:
+
+* Idempotent (`GET`, `HEAD`, etc.)
+* Bodyless
+
+Examples:
+
+```
+✔ GET /health        → retryable
+✖ POST /upload      → not retryable
+```
+
+This preserves the no-buffering guarantee while improving resilience against transient upstream failures.
+
+---
+
+### 4. WebSocket Tunneling
+
+* Transparent WebSocket proxying
+* Uses `hyper::upgrade`
+* Bidirectional streaming via `tokio::io::copy_bidirectional`
+* Clean EOF handling to prevent file descriptor leaks
+
+---
+
+### 5. Correct Header Handling
+
+**Hop-by-hop headers** are stripped:
+
+* `Connection`
+* `Transfer-Encoding`
+* and others
+
+**Forwarded headers**:
+
+* `X-Forwarded-For` (appended, not overwritten)
+* `X-Forwarded-Host`
+* `X-Forwarded-Proto`
+
+Fully compliant with proxy chaining expectations and covered by unit tests.
+
+---
+
+### 6. Middleware Guarantees
+
+| Feature         | Default            |
+| --------------- | ------------------ |
+| Max body size   | 10 MB              |
+| Request timeout | 30 sec             |
+| Logging         | 1 line per request |
+| Error mapping   | JSON + HTTP status |
+
+**Example log line**
+
+```
+2026-07-01T00:00:00Z GET /api/v1/todos
+→ http://127.0.0.1:8000/v1/todos
+STATUS: 200 | LATENCY: 3.20ms
+```
+
+---
 
 ## Configuration
 
-The gateway can run from a `gateway.toml` file for generic local service routing:
+### `.env.example` (dev-gateway)
 
-```toml
-[server]
-host = "127.0.0.1"
-port = 8080
+```
+GATEWAY_HOST=127.0.0.1
+GATEWAY_PORT=8080
 
-[limits]
-max_body_bytes = 10485760
-request_timeout_secs = 30
+GATEWAY_CONFIG_PATH=./gateway.toml
 
-[retries]
-attempts = 3
-backoff_ms = 50
-
-[[routes]]
-path = "/api"
-target = "http://127.0.0.1:8000"
-strip_prefix = true
-
-[[routes]]
-path = "/"
-target = "http://127.0.0.1:3000"
-strip_prefix = false
+MAX_BODY_BYTES=10485760
+REQUEST_TIMEOUT_SECS=30
 ```
 
-Copy `gateway.toml.example` to `gateway.toml`, or set `GATEWAY_CONFIG` to a
-custom file path. If no config file is present, the gateway falls back to the
-legacy environment variables from `crates/dev-gateway/.env.example`.
+### Configuration Precedence
 
-Routes are matched with path boundaries, and the longest matching route wins.
-That means `/api` matches `/api` and `/api/v1/todos`, but not `/apiary`.
+1. Environment variables
+2. `gateway.toml`
+3. Hardcoded defaults
 
-## Resilience
+All configuration values are:
 
-Bodyless idempotent requests are retried when the upstream connection fails.
-Retries default to 3 attempts with a 50ms backoff and can be configured in TOML
-or with `RETRY_ATTEMPTS` and `RETRY_BACKOFF_MS` when using env fallback.
+* Loaded via `dotenvy`
+* Parsed with full type safety
+* Validated at startup
 
-Streaming request bodies are not retried because replaying them would require
-buffering or spooling the body, which would break the gateway's no-buffering
-proxy model.
+---
 
-## Forwarded Headers
+## Error Mapping
 
-The gateway strips hop-by-hop headers and manages forwarding headers:
+| Condition              | HTTP Status               |
+| ---------------------- | ------------------------- |
+| Upstream unreachable   | 502 Bad Gateway           |
+| Upstream timeout       | 504 Gateway Timeout       |
+| Request body too large | 413 Payload Too Large     |
+| Internal gateway error | 500 Internal Server Error |
 
-- `X-Forwarded-For` appends the client IP to any existing chain.
-- `X-Forwarded-Host` preserves the original `Host` header.
-- `X-Forwarded-Proto` is set to `http` for local development.
+**Example error response**
+
+```json
+{
+  "error": "BAD_GATEWAY",
+  "message": "Connection refused"
+}
+```
+
+---
 
 ## Running Locally
 
-```powershell
-$env:SERVER_PORT = "8000"
-cargo run -p todo-api
+### 1. Start a backend (test API)
+
+```bash
+SERVER_PORT=8000 cargo run -p todo-api
 ```
 
-```powershell
+> This uses the **test-only `todo-api`** as a backend stand-in.
+
+### 2. Start the gateway
+
+```bash
 cargo run -p dev-gateway
 ```
 
-```powershell
+### 3. Test via the gateway
+
+```bash
 curl http://127.0.0.1:8080/api/v1/todos
 ```
 
+---
+
 ## Verification
 
-```powershell
+### Automated
+
+```bash
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 ```
 
-## Performance
+### Manual Error Scenarios
 
-Simple local smoke benchmark on Windows using debug binaries and 200 sequential
-requests from .NET `HttpClient`:
+**502 Bad Gateway**
 
-| Path | Average latency | Requests/sec |
-| --- | ---: | ---: |
-| Direct `todo-api` | 1.193ms | 838.19 |
-| Through `dev-gateway` | 2.723ms | 367.24 |
+* Point a route upstream at a closed port
+* Start the gateway and issue a request
 
-Observed gateway overhead in that run was 1.530ms per request. For release-grade
-numbers, run the same comparison with optimized binaries and a load tool such as
-`hey` or `wrk`.
+**413 Payload Too Large**
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/test -d @large_file.bin
+```
+
+---
+
+## Philosophy
+
+This project intentionally mirrors **production reverse proxy behavior**:
+
+* Streaming-first
+* Explicit configuration
+* No hidden assumptions
+* No framework-specific coupling
+
+It is meant to be **understood, audited, and extended**, not treated as a black box.
