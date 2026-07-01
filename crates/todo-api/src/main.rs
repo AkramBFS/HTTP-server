@@ -29,9 +29,9 @@ async fn main() {
     // Initialize structured logging and diagnostic frameworks.
     let level_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         let trace_level = if system_config.environment == "development" {
-            "http_server=debug,tower_http=debug,axum=info"
+            "todo_api=debug,tower_http=debug,axum=info"
         } else {
-            "http_server=info,tower_http=info,axum=warn"
+            "todo_api=info,tower_http=info,axum=warn"
         };
         EnvFilter::new(trace_level)
     });

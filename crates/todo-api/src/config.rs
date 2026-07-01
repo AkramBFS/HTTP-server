@@ -15,7 +15,7 @@ impl AppConfig {
         let _ = dotenv().ok();
 
         let server_host = env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let server_port_raw = env::var("SERVER_PORT").unwrap_or_else(|_| "3000".to_string());
+        let server_port_raw = env::var("SERVER_PORT").unwrap_or_else(|_| "3001".to_string());
         let server_port = server_port_raw
             .parse::<u16>()
             .map_err(|e| format!("Invalid SERVER_PORT parameter ({}): {}", server_port_raw, e))?;
