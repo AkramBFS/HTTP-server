@@ -316,16 +316,3 @@ cargo clippy --workspace -- -D warnings
 ```bash
 curl -X POST http://127.0.0.1:8080/api/test -d @large_file.bin
 ```
-
----
-
-## Philosophy
-
-This project intentionally mirrors **production reverse proxy behavior**:
-
-* Streaming-first
-* Explicit configuration
-* No hidden assumptions
-* No framework-specific coupling
-
-It is meant to be **understood, audited, and extended**, not treated as a black box.
